@@ -22,15 +22,28 @@ def main():
     regul_lambda = 6e-1
     training_epochs = 30
 
-    poses_train = np.load('poses_train.npy')  # Shape [n_train_examples, n_joints, 3]
-    poses_test = np.load('poses_test.npy')  # Shape [n_test_examples, n_joints, 3]
+    poses_train = np.load('../aggregated_data/poses_train.npy')  # Shape [n_train_examples, n_joints, 3]
+    poses_test = np.load('../aggregated_data/poses_test.npy')  # Shape [n_test_examples, n_joints, 3]
+
+    # compute masks BEFORE replacing NaNs
+    mask_train = np.isfinite(poses_train).all(axis=-1)
+    mask_test = np.isfinite(poses_test).all(axis=-1)
+
+    # replace NaNs so tensorflow doesn't crash
+    poses_train = np.nan_to_num(poses_train, nan=0.0)
+    poses_test = np.nan_to_num(poses_test, nan=0.0)
+
+    print("Any NaNs in train:", np.isnan(poses_train).any())
+    print("Any infs in train:", np.isinf(poses_train).any())
+    print("missing joints train:", np.sum(~mask_train))
+    print("missing joints test:", np.sum(~mask_test))
 
     # Get name of each joint, left ones start with l, right with r
     # This will be a list like ['lhip', 'lknee', 'lankle', 'rhip', 'rknee', 'rankle', 'spine', ...]
     # Left-right pairs should have the same name except for the first letter, which is l for left
     # and r for right joints. Central joints (e.g., spine, pelvis, head, neck) should not start
     # with either l or r.
-    joint_names = list(np.load('joint_names.npy'))
+    joint_names = list(np.load('../aggregated_data/joint_names.npy'))
     w1, w2 = train_acae(
         poses_train=poses_train, poses_test=poses_test, joint_names=joint_names,
         n_latent_sided=n_latent_sided, n_latent_center=n_latent_center, batch_size=batch_size,
@@ -61,9 +74,9 @@ def train_acae(
         chiral=True)
     trainer = AffineCombiningAutoencoderTrainer(
         model, regul_lambda=regul_lambda, use_projected_loss=True, random_seed=0)
-    trainer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule()))
+    trainer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule()), steps_per_execution=1, run_eagerly=True)
     trainer.fit(
-        train_ds, validation_data=val_ds, steps_per_epoch=len(poses_train) / batch_size,
+        train_ds, validation_data=val_ds, steps_per_epoch=int(len(poses_train) / batch_size),
         epochs=training_epochs, verbose=1)
 
     w1 = model.encoder.get_w().numpy()
@@ -112,23 +125,23 @@ class AffineCombinationLayer(tf.keras.layers.Layer):
         self.w_s = self.make_weight(
             'affine_weights_s',
             shape=(self.n_sided_points // 2, self.n_latent_points_sided // 2),
-            initializers=tf.keras.initializers.random_uniform(-0.1, 1))
+            initializers=[tf.keras.initializers.RandomUniform(-0.1, 1), tf.keras.initializers.RandomUniform(-0.1, 1)])
         self.w_c = self.make_weight(
             'affine_weights_c',
             shape=(self.n_center_points, self.n_latent_points_sided // 2),
-            initializers=tf.keras.initializers.random_uniform(-0.1, 1))
+            initializers=[tf.keras.initializers.RandomUniform(-0.1, 1), tf.keras.initializers.RandomUniform(-0.1, 1)])
         self.w_q = self.make_weight(
             'affine_weights_q',
             shape=(self.n_sided_points // 2, self.n_latent_points_sided // 2),
-            initializers=tf.keras.initializers.random_uniform(-0.1, 1))
+            initializers=[tf.keras.initializers.RandomUniform(-0.1, 1), tf.keras.initializers.RandomUniform(-0.1, 1)])
         self.w_x = self.make_weight(
             'affine_weights_x',
             shape=(self.n_sided_points // 2, self.n_latent_points_center),
-            initializers=tf.keras.initializers.random_uniform(-0.1, 1))
+            initializers=[tf.keras.initializers.RandomUniform(-0.1, 1), tf.keras.initializers.RandomUniform(-0.1, 1)])
         self.w_z = self.make_weight(
             'affine_weights_z',
             shape=(self.n_center_points, self.n_latent_points_center),
-            initializers=tf.keras.initializers.random_uniform(-0.1, 1), single=True)
+            initializers=[tf.keras.initializers.RandomUniform(-0.1, 1)], single=True)
 
     def call(self, inputs):
         return tf.einsum('bjc,jJ->bJc', inputs, self.get_w())
@@ -140,12 +153,12 @@ class AffineCombinationLayer(tf.keras.layers.Layer):
 
     def make_weight(self, name, shape, initializers, dtype='float32', single=False):
         w1 = self.add_weight(
-            name, shape=shape, dtype=dtype, initializer=initializers[0])
+            name=name, shape=shape, dtype=dtype, initializer=initializers[0])
 
         if self.chiral or single:
             w2 = w1
         else:
-            w2 = self.add_weight(f'{name}_2', shape=shape, dtype=dtype, initializer=initializers[1])
+            w2 = self.add_weight(name=f'{name}_2', shape=shape, dtype=dtype, initializer=initializers[1])
         return w1, w2
 
 
@@ -157,14 +170,15 @@ class AffineCombiningAutoencoderTrainer(fleras.ModelTrainer):
         self.use_projected_loss = use_projected_loss
 
     def forward_train(self, inps, training):
-        return dict(pose3d=self.model(inps.pose3d))
+        return dict(pose3d=self.model(inps['pose3d']))
 
     def compute_losses(self, inps, preds):
         losses = EasyDict()
         if self.use_projected_loss:
-            x, y = splat(inps.pose3d, preds.pose3d)
+            x, y = splat(inps['pose3d'], preds['pose3d'])
         else:
-            x, y = inps.pose3d / 1000, preds.pose3d / 1000
+            x, y = inps['pose3d'] / 1000, preds['pose3d'] / 1000
+        """
         # Mask out entire joint if any coordinate is NaN
         valid_joint_mask = tf.reduce_all(tf.math.is_finite(x), axis=-1, keepdims=True)
         # Apply mask and compute mean only over valid elements
@@ -175,6 +189,10 @@ class AffineCombiningAutoencoderTrainer(fleras.ModelTrainer):
         valid_count = tf.maximum(valid_count, tf.cast(1e-6, x.dtype))
         
         losses.main_loss = tf.reduce_sum(diffs) / valid_count
+        """
+        mask = tf.math.is_finite(x)
+        diffs = tf.where(mask, tf.abs(x - y), 0.0)
+        losses.main_loss = tf.reduce_mean(diffs)
 
         w1 = self.model.encoder.get_w()
         w2 = self.model.decoder.get_w()
@@ -186,19 +204,44 @@ class AffineCombiningAutoencoderTrainer(fleras.ModelTrainer):
         return losses
 
 
-@fleras.optimizers.schedules.wrap(jit_compile=True)
+@fleras.optimizers.schedules.wrap(jit_compile=False)
 def lr_schedule(step):
-    if step < 150000:
-        return 3e-2
-    if step < 300000:
-        return 3e-3
-    else:
-        return 3e-4
-
+    step = tf.cast(step, tf.int64)
+    return tf.cond(
+        step < 150000,
+        lambda: tf.constant(3e-2, dtype=tf.float32),
+        lambda: tf.cond(
+            step < 300000,
+            lambda: tf.constant(3e-3, dtype=tf.float32),
+            lambda: tf.constant(3e-4, dtype=tf.float32)
+        )
+    )
+"""
 def splat(x, y):
+    x = tf.cast(x, tf.float32)
+    y = tf.cast(y, tf.float32)
     z_mean = tf.reduce_mean(x[..., 2:], axis=1, keepdims=True)
-    return x[..., :2] / x[..., 2:] * z_mean / 1000, y[..., :2] / y[..., 2:] * z_mean / 1000
+    return x[..., :2] / x[..., 2:] * z_mean / 1000.0, y[..., :2] / y[..., 2:] * z_mean / 1000.0
 
+"""
+def splat(x, y):
+    x = tf.cast(x, tf.float32)
+    y = tf.cast(y, tf.float32)
+
+    z = x[..., 2:]
+
+    # prevent divide-by-zero
+    z_safe = tf.where(tf.abs(z) < 1e-3, tf.ones_like(z), z)
+
+    valid = tf.math.is_finite(z)
+    z_mean = tf.reduce_sum(tf.where(valid, z, 0.0), axis=1, keepdims=True) / (
+        tf.reduce_sum(tf.cast(valid, tf.float32), axis=1, keepdims=True) + 1e-6
+    )
+
+    x_proj = x[..., :2] / z_safe * z_mean / 1000.0
+    y_proj = y[..., :2] / z_safe * z_mean / 1000.0
+
+    return x_proj, y_proj
 
 def normalize_weights(w):
     return w / tf.reduce_sum(w, axis=0, keepdims=True)
