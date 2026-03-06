@@ -22,8 +22,8 @@ def main():
     regul_lambda = 6e-1
     training_epochs = 30
 
-    poses_train = np.load('../aggregated_data/poses_train.npy')  # Shape [n_train_examples, n_joints, 3]
-    poses_test = np.load('../aggregated_data/poses_test.npy')  # Shape [n_test_examples, n_joints, 3]
+    poses_train = np.load('aggregated_data/poses_train.npy')  # Shape [n_train_examples, n_joints, 3]
+    poses_test = np.load('aggregated_data/poses_test.npy')  # Shape [n_test_examples, n_joints, 3]
 
     # compute masks BEFORE replacing NaNs
     mask_train = np.isfinite(poses_train).all(axis=-1)
@@ -43,7 +43,7 @@ def main():
     # Left-right pairs should have the same name except for the first letter, which is l for left
     # and r for right joints. Central joints (e.g., spine, pelvis, head, neck) should not start
     # with either l or r.
-    joint_names = list(np.load('../aggregated_data/joint_names.npy'))
+    joint_names = list(np.load('aggregated_data/joint_names.npy'))
     w1, w2 = train_acae(
         poses_train=poses_train, poses_test=poses_test, joint_names=joint_names,
         n_latent_sided=n_latent_sided, n_latent_center=n_latent_center, batch_size=batch_size,
@@ -144,7 +144,15 @@ class AffineCombinationLayer(tf.keras.layers.Layer):
             initializers=[tf.keras.initializers.RandomUniform(-0.1, 1)], single=True)
 
     def call(self, inputs):
-        return tf.einsum('bjc,jJ->bJc', inputs, self.get_w())
+        w = self.get_w()
+        is_missing = tf.reduce_all(tf.equal(inputs, 0.0), axis=-1)
+        is_valid = tf.cast(tf.logical_not(is_missing), tf.float32)
+        
+        w_eff = tf.expand_dims(w, 0) * tf.expand_dims(is_valid, 2)
+        w_sum = tf.reduce_sum(w_eff, axis=1, keepdims=True) + 1e-9
+        w_norm = w_eff / w_sum
+        
+        return tf.einsum('bjc,bjJ->bJc', inputs, w_norm)
 
     def get_w(self):
         w = block_concat(self.get_blocks())
