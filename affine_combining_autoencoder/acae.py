@@ -165,7 +165,16 @@ class AffineCombiningAutoencoderTrainer(fleras.ModelTrainer):
             x, y = splat(inps.pose3d, preds.pose3d)
         else:
             x, y = inps.pose3d / 1000, preds.pose3d / 1000
-        losses.main_loss = tf.reduce_mean(tf.abs(x - y))
+        # Mask out entire joint if any coordinate is NaN
+        valid_joint_mask = tf.reduce_all(tf.math.is_finite(x), axis=-1, keepdims=True)
+        # Apply mask and compute mean only over valid elements
+        diffs = tf.where(valid_joint_mask, tf.abs(x - y), tf.cast(0.0, x.dtype))
+        valid_count = tf.reduce_sum(tf.cast(valid_joint_mask, x.dtype)) * tf.cast(tf.shape(x)[-1], x.dtype)
+        
+        # Prevent division by zero if all are NaN (unlikely but safe)
+        valid_count = tf.maximum(valid_count, tf.cast(1e-6, x.dtype))
+        
+        losses.main_loss = tf.reduce_sum(diffs) / valid_count
 
         w1 = self.model.encoder.get_w()
         w2 = self.model.decoder.get_w()
