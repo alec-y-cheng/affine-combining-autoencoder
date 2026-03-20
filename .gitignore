@@ -1,6 +1,4 @@
 data/
-*.npy
-*.npz
-*.png
-*.csv
 __pycache__/
+aggregated_data/
+results/

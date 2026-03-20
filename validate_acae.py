@@ -6,7 +6,7 @@ def validate():
     
     print("Loading ACAE weights from result.npz...")
     try:
-        res = np.load('result.npz')
+        res = np.load('results/result.npz')
         w1 = res['w1']
         w2 = res['w2']
     except FileNotFoundError:

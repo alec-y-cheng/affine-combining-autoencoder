@@ -136,7 +136,7 @@ def visualize(w1=None, w2=None, epoch_num=None):
                         
     plt.tight_layout()
     
-    file_name = f'pose_reconstructions_epoch_{epoch_num}.png' if epoch_num is not None else 'pose_reconstructions.png'
+    file_name = f'results/pose_reconstructions_epoch_{epoch_num}.png' if epoch_num is not None else 'results/pose_reconstructions.png'
     plt.savefig(file_name, dpi=150)
     print(f"Successfully saved visualizations to '{file_name}'!")
 

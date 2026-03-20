@@ -44,11 +44,12 @@ def main():
     # and r for right joints. Central joints (e.g., spine, pelvis, head, neck) should not start
     # with either l or r.
     joint_names = list(np.load('aggregated_data/joint_names.npy'))
-    w1, w2 = train_acae(
+    w1, w2, b1, b2, w_s, w_q, w_x, w_z = train_acae(
         poses_train=poses_train, poses_test=poses_test, joint_names=joint_names,
         n_latent_sided=n_latent_sided, n_latent_center=n_latent_center, batch_size=batch_size,
         regul_lambda=regul_lambda, training_epochs=training_epochs)
-    np.savez('result.npz', w1=w1, w2=w2)
+    np.savez('results/result.npz', w1=w1, w2=w2, b1=b1, b2=b2,
+             w_s=w_s, w_q=w_q, w_x=w_x, w_z=w_z)
 
 
 def train_acae(
@@ -80,7 +81,7 @@ def train_acae(
     dummy_input = tf.zeros((1, poses_train.shape[1], 3), dtype=tf.float32)
     _ = trainer.forward_train(dict(pose3d=dummy_input), training=False)
     
-    csv_logger = tf.keras.callbacks.CSVLogger('losses.csv', append=True)
+    csv_logger = tf.keras.callbacks.CSVLogger('results/losses.csv', append=True)
     
     import sys
     sys.path.append('.')

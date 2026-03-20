@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 def verify_all():
     print("Running Global Joint Drift Experiment...")
     # Load matrices
-    res = np.load('result.npz')
+    res = np.load('results/result.npz')
     w1, w2 = res['w1'], res['w2']
     
     poses_test = np.load('aggregated_data/poses_test.npy')
@@ -44,7 +44,7 @@ def verify_all():
     plt.xticks(rotation=45, ha='right', fontsize=10)
     plt.grid(True, alpha=0.2, axis='y')
     plt.tight_layout()
-    plt.savefig('joint_drift_bar.png', dpi=150)
+    plt.savefig('results/joint_drift_bar.png', dpi=150)
     
     # ==========================
     # 2. Scatter Plot Displacement Map
@@ -66,7 +66,7 @@ def verify_all():
     plt.axis('equal')
     plt.grid(True, alpha=0.2)
     plt.tight_layout()
-    plt.savefig('joint_drift_scatter.png', dpi=150)
+    plt.savefig('results/joint_drift_scatter.png', dpi=150)
     
     print("Saved macroscopic variance plots!")
 

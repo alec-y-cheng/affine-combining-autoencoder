@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 def plot_losses():
     # Load all CSV iterations
-    df = pd.read_csv('losses.csv')
+    df = pd.read_csv('results/losses.csv')
     
     # We want the final continuous run to exclude aborted executions
     start_idx = df[df['epoch'] == 0].index[-1]
@@ -27,7 +27,7 @@ def plot_losses():
     ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('loss_curve.png', dpi=150)
+    plt.savefig('results/loss_curve.png', dpi=150)
     print("Saved convergence chart to loss_curve.png")
 
 if __name__ == '__main__':
