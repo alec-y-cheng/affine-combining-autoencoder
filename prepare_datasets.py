@@ -68,7 +68,7 @@ def load_coco(json_path):
                         joints_3d = np.concatenate([joints, np.full((17, 1), 1000.0)], axis=-1)
                         poses.append(joints_3d)
                         
-    return np.array(poses), coco_names
+    return np.array(poses), coco_names  #(N, 17, 3)
 
 def load_mpii(zip_path):
     print("Loading MPII...")
@@ -122,29 +122,76 @@ def load_mpii(zip_path):
                     
     return np.array(poses), mpii_names
 
+def load_h36m(npz_path):
+    print("Loading Human3.6M...")
+    d2 = np.load(npz_path, allow_pickle=True)
+    pos_2d = d2['positions_2d'].item()
+    
+    # H36M usually has 17 joints, similar to COCO but different order
+    h36m_names = ['pelvis', 'rhip', 'rknee', 'rankle', 'lhip', 'lknee', 'lankle', 
+                  'spine', 'thorax', 'upperneck', 'headtop', 
+                  'lshoulder', 'lelbow', 'lwrist', 'rshoulder', 'relbow', 'rwrist']
+                  
+    poses = []
+    
+    for subject in pos_2d.keys():
+        for action in pos_2d[subject].keys():
+            for cam_idx in range(len(pos_2d[subject][action])):
+                # Extract frames for this camera sequence
+                frames = pos_2d[subject][action][cam_idx] # Shape: [N_frames, 17, 2]
+                
+                for i in range(len(frames)):
+                    joints = frames[i]
+                    
+                    # Normalize scale based on pelvis (0), lshoulder(11), rshoulder(14)
+                    center = joints[0]
+                    scale = np.linalg.norm(joints[11] - joints[14])
+                    
+                    if scale > 1e-6:
+                        norm_joints = (joints - center) / scale
+                        # add dummy Z
+                        joints_3d = np.concatenate([norm_joints, np.full((17, 1), 1000.0)], axis=-1)
+                        poses.append(joints_3d)
+                        
+    return np.array(poses), h36m_names
+
+def fix_partial_joints(poses):
+    # count NaNs per joint
+    nan_count = np.isnan(poses).sum(axis=2)
+
+    # joints with some but not all coordinates missing
+    partial_mask = (nan_count > 0) & (nan_count < 3)
+
+    # set them to fully missing
+    poses[partial_mask, :] = np.nan
+
+    return poses
+
 
 def main():
     coco_json = 'data/coco_wholebody_train_v1.0.json'
     mpii_zip = 'data/mpii_human_pose_v1_u12_2.zip'
+    h36m_npz = 'data/h36m/data/data_2d_h36m_gt.npz'
     
     coco_poses, coco_names = load_coco(coco_json)
     mpii_poses, mpii_names = load_mpii(mpii_zip)
+    h36m_poses, h36m_names = load_h36m(h36m_npz)
     
     print(f"COCO poses: {coco_poses.shape}")
     print(f"MPII poses: {mpii_poses.shape}")
+    print(f"H36M poses: {h36m_poses.shape}")
     
     # Unified names
-    all_names = list(set(coco_names + mpii_names))
-    
-    # Sort names so left/right are separated cleanly for ACAE?
-    # Actually ACAE handles them by just finding 'l' and 'r' prefix
+    all_names = coco_names + [n for n in mpii_names if n not in coco_names]
+    all_names = all_names + [n for n in h36m_names if n not in all_names]
     
     N_coco = len(coco_poses)
     N_mpii = len(mpii_poses)
+    N_h36m = len(h36m_poses)
     J = len(all_names)
     
     # Create unified matrices
-    poses_train = np.full((N_coco + N_mpii, J, 3), np.nan)
+    poses_train = np.full((N_coco + N_mpii + N_h36m, J, 3), np.nan)
     
     for i, name in enumerate(coco_names):
         j_idx = all_names.index(name)
@@ -152,7 +199,11 @@ def main():
         
     for i, name in enumerate(mpii_names):
         j_idx = all_names.index(name)
-        poses_train[N_coco:, j_idx, :] = mpii_poses[:, i, :]
+        poses_train[N_coco:N_coco+N_mpii, j_idx, :] = mpii_poses[:, i, :]
+        
+    for i, name in enumerate(h36m_names):
+        j_idx = all_names.index(name)
+        poses_train[N_coco+N_mpii:, j_idx, :] = h36m_poses[:, i, :]
         
     print(f"Combined poses: {poses_train.shape}")
     
@@ -166,10 +217,13 @@ def main():
     
     poses_train_final = poses_train[train_idx]
     poses_test_final = poses_train[test_idx]
+
+    poses_train_final = fix_partial_joints(poses_train_final).astype(np.float32)
+    poses_test_final = fix_partial_joints(poses_test_final).astype(np.float32)
     
-    np.save('poses_train.npy', poses_train_final)
-    np.save('poses_test.npy', poses_test_final)
-    np.save('joint_names.npy', np.array(all_names))
+    np.save('aggregated_data/poses_train.npy', poses_train_final)
+    np.save('aggregated_data/poses_test.npy', poses_test_final)
+    np.save('aggregated_data/joint_names.npy', np.array(all_names))
     
     print("Saved poses_train.npy, poses_test.npy, joint_names.npy")
 

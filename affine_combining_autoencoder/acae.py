@@ -20,7 +20,7 @@ def main():
     n_latent_center = 8
     batch_size = 32
     regul_lambda = 6e-1
-    training_epochs = 30
+    training_epochs = 15
 
     poses_train = np.load('aggregated_data/poses_train.npy')  # Shape [n_train_examples, n_joints, 3]
     poses_test = np.load('aggregated_data/poses_test.npy')  # Shape [n_test_examples, n_joints, 3]
@@ -74,10 +74,40 @@ def train_acae(
         chiral=True)
     trainer = AffineCombiningAutoencoderTrainer(
         model, regul_lambda=regul_lambda, use_projected_loss=True, random_seed=0)
-    trainer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule()), steps_per_execution=1, run_eagerly=True)
+    trainer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=lr_schedule()), steps_per_execution=1)
+    
+    # Force Keras to build the model layers and instantiate the untrained matrices before Epoch 0 callback
+    dummy_input = tf.zeros((1, poses_train.shape[1], 3), dtype=tf.float32)
+    _ = trainer.forward_train(dict(pose3d=dummy_input), training=False)
+    
+    csv_logger = tf.keras.callbacks.CSVLogger('losses.csv', append=True)
+    
+    import sys
+    sys.path.append('.')
+    import visualize_poses
+
+    class VizCallback(tf.keras.callbacks.Callback):
+        def on_train_begin(self, logs=None):
+            # Render the raw, untrained weights matrices before gradients begin 
+            print(f"\n[VizCallback] Generating validation image for Epoch 0 (Untrained)...")
+            w1_curr = self.model.model.encoder.get_w().numpy()
+            w2_curr = self.model.model.decoder.get_w().numpy()
+            w1_orig, w2_orig = permute_weights(w1_curr, w2_curr, inv_permutation)
+            visualize_poses.visualize(w1_orig, w2_orig, epoch_num=0)
+
+        def on_epoch_end(self, epoch, logs=None):
+            # Render validation pairs every single epoch
+            print(f"\n[VizCallback] Generating validation image for Epoch {epoch+1}...")
+            w1_curr = self.model.model.encoder.get_w().numpy()
+            w2_curr = self.model.model.decoder.get_w().numpy()
+            w1_orig, w2_orig = permute_weights(w1_curr, w2_curr, inv_permutation)
+            visualize_poses.visualize(w1_orig, w2_orig, epoch_num=epoch+1)
+
+    viz_callback = VizCallback()
+    
     trainer.fit(
         train_ds, validation_data=val_ds, steps_per_epoch=int(len(poses_train) / batch_size),
-        epochs=training_epochs, verbose=1)
+        epochs=training_epochs, verbose=1, callbacks=[csv_logger, viz_callback])
 
     w1 = model.encoder.get_w().numpy()
     w2 = model.decoder.get_w().numpy()
@@ -127,6 +157,7 @@ class AffineCombinationLayer(tf.keras.layers.Layer):
             shape=(self.n_sided_points // 2, self.n_latent_points_sided // 2),
             initializers=[tf.keras.initializers.RandomUniform(-0.1, 1), tf.keras.initializers.RandomUniform(-0.1, 1)])
         self.w_c = self.make_weight(
+            
             'affine_weights_c',
             shape=(self.n_center_points, self.n_latent_points_sided // 2),
             initializers=[tf.keras.initializers.RandomUniform(-0.1, 1), tf.keras.initializers.RandomUniform(-0.1, 1)])
@@ -198,9 +229,15 @@ class AffineCombiningAutoencoderTrainer(fleras.ModelTrainer):
         
         losses.main_loss = tf.reduce_sum(diffs) / valid_count
         """
-        mask = tf.math.is_finite(x)
-        diffs = tf.where(mask, tf.abs(x - y), 0.0)
-        losses.main_loss = tf.reduce_mean(diffs)
+        is_missing = tf.reduce_all(tf.equal(x, 0.0), axis=-1, keepdims=True)
+        is_valid = tf.logical_not(is_missing)
+        
+        diffs = tf.where(is_valid, tf.abs(x - y), 0.0)
+        
+        # Divide exclusively by valid coordinates so rare dataset joints don't
+        # systematically get crushed by the mean of empty origin tensors
+        valid_count = tf.reduce_sum(tf.cast(is_valid, tf.float32)) + 1e-6
+        losses.main_loss = tf.reduce_sum(diffs) / valid_count
 
         w1 = self.model.encoder.get_w()
         w2 = self.model.decoder.get_w()
